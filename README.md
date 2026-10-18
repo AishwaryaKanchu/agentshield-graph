@@ -308,8 +308,8 @@ A reproducible project needs understandable graph models, accurate queries, setu
 ## 👩‍💻 Project Information
 
 **Project:** AgentShield Graph  
-**Developers:** Aishwarya Kanchu 
-               Kunduru Bhavitha
+**Developers:** Aishwarya Kanchu , 
+               Kunduru Bhavitha , 
                Laxmi Sathwika Chethi
 
 
