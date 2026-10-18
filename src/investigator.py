@@ -27,6 +27,28 @@ class RemediationResult:
     details: str
 
 
+def sanitize_error(exc: Exception) -> str:
+    """Sanitizes exception messages to guarantee API keys are never exposed.
+
+    Provides user-friendly diagnostics for common API failure modes.
+    """
+    raw = str(exc)
+    # Redact any potential API key patterns or query parameters
+    scrubbed = re.sub(r"key=[A-Za-z0-9_-]+", "key=[REDACTED]", raw)
+    scrubbed = re.sub(r"AIza[0-9A-Za-z_-]{35}", "[REDACTED_KEY]", scrubbed)
+
+    if "API_KEY_INVALID" in raw or "API key not valid" in raw:
+        return "Invalid Gemini API Key: Please verify your Google AI Studio key."
+    elif "RESOURCE_EXHAUSTED" in raw or "429" in raw or "quota" in raw.lower():
+        return "Gemini API Quota Exceeded / Rate Limited (HTTP 429)."
+    elif "NOT_FOUND" in raw or "404" in raw:
+        return f"Gemini Model Unavailable: {scrubbed[:120]}"
+    elif "ConnectError" in type(exc).__name__ or "timeout" in raw.lower():
+        return "Network connection to Gemini API timed out or unreachable."
+
+    return f"Gemini API error ({type(exc).__name__}): {scrubbed[:140]}"
+
+
 @dataclass
 class InvestigationReport:
     query: str
@@ -37,6 +59,8 @@ class InvestigationReport:
     unverified_conclusions: List[str] = field(default_factory=list)
     remediations: List[Dict[str, Any]] = field(default_factory=list)
     summary: str = ""
+    error_message: Optional[str] = None
+    llm_verified: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -49,15 +73,42 @@ class AgentShieldInvestigator:
     """
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        # Support GEMINI_API_KEY and GOOGLE_API_KEY; never expose keys in logs
+        # Support GEMINI_API_KEY and GOOGLE_API_KEY; never expose keys in logs; strip quotes/spaces
         raw_key = (
-            (api_key or "").strip()
-            or os.getenv("GEMINI_API_KEY", "").strip()
-            or os.getenv("GOOGLE_API_KEY", "").strip()
+            (api_key or "").strip().strip("'\"")
+            or os.getenv("GEMINI_API_KEY", "").strip().strip("'\"")
+            or os.getenv("GOOGLE_API_KEY", "").strip().strip("'\"")
         )
         self._api_key = raw_key
-        self.model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        # Default model matches .env.example (gemini-2.0-flash is universally available across all tiers)
+        self.model = model or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
         self.has_llm = bool(self._api_key)
+
+    async def verify_credentials(self) -> tuple[bool, str]:
+        """Probes the Gemini API with a minimal query to verify key validity.
+
+        Returns (is_valid, message) without ever revealing secrets.
+        """
+        if not self.has_llm:
+            return False, "No API key configured."
+        try:
+            from google import genai
+            client = genai.Client(api_key=self._api_key)
+            if hasattr(client, "aio") and hasattr(client.aio, "models"):
+                resp = await client.aio.models.generate_content(
+                    model=self.model,
+                    contents="ping",
+                )
+            else:
+                resp = client.models.generate_content(
+                    model=self.model,
+                    contents="ping",
+                )
+            if resp and resp.text:
+                return True, f"Key verified with model '{self.model}'."
+            return False, "Gemini returned empty response."
+        except Exception as e:
+            return False, sanitize_error(e)
 
     async def _execute_mcp_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Calls a registered MCP tool on mcp_server and returns its structured result."""
@@ -78,10 +129,13 @@ class AgentShieldInvestigator:
         if self.has_llm:
             try:
                 return await self._investigate_with_gemini(query, incident_id, auto_remediate)
-            except Exception:
+            except Exception as e:
                 # Graceful fallback to deterministic engine if Gemini fails or quota exceeded
+                sanitized_msg = sanitize_error(e)
                 report = await self._investigate_deterministic(query, incident_id, auto_remediate)
                 report.provider = "deterministic-fallback (LLM unavailable)"
+                report.error_message = sanitized_msg
+                report.llm_verified = False
                 return report
         else:
             return await self._investigate_deterministic(query, incident_id, auto_remediate)
@@ -289,19 +343,57 @@ Verified FalkorDB Graph Evidence:
 
 Synthesize a security investigation report."""
 
-        response = client.models.generate_content(
-            model=self.model,
-            contents=user_content,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.1,
-            ),
-        )
+        try:
+            if hasattr(client, "aio") and hasattr(client.aio, "models"):
+                response = await client.aio.models.generate_content(
+                    model=self.model,
+                    contents=user_content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.1,
+                    ),
+                )
+            else:
+                response = client.models.generate_content(
+                    model=self.model,
+                    contents=user_content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.1,
+                    ),
+                )
+        except Exception as primary_err:
+            err_str = str(primary_err)
+            # If the configured model is unavailable (404 / NOT_FOUND), try standard fallback
+            if ("404" in err_str or "NOT_FOUND" in err_str) and self.model != "gemini-2.0-flash":
+                fallback_model = "gemini-2.0-flash"
+                if hasattr(client, "aio") and hasattr(client.aio, "models"):
+                    response = await client.aio.models.generate_content(
+                        model=fallback_model,
+                        contents=user_content,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.1,
+                        ),
+                    )
+                else:
+                    response = client.models.generate_content(
+                        model=fallback_model,
+                        contents=user_content,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.1,
+                        ),
+                    )
+                self.model = fallback_model
+            else:
+                raise primary_err
 
         text = response.text or ""
-        confirmed = [line.strip() for line in text.split("\n") if "[CONFIRMED GRAPH FINDING]" in line]
-        risks = [line.strip() for line in text.split("\n") if "[POTENTIAL RISK]" in line]
-        unverified = [line.strip() for line in text.split("\n") if "[UNVERIFIED CONCLUSION]" in line]
+        raw_lines = [line.strip().lstrip("*- ").strip() for line in text.split("\n")]
+        confirmed = [line for line in raw_lines if "[CONFIRMED GRAPH FINDING]" in line]
+        risks = [line for line in raw_lines if "[POTENTIAL RISK]" in line]
+        unverified = [line for line in raw_lines if "[UNVERIFIED CONCLUSION]" in line]
 
         if not confirmed:
             confirmed.append("[CONFIRMED GRAPH FINDING] Multi-hop access path through CustomerSupportBot to Customer PII DB identified via FalkorDB.")
@@ -319,6 +411,8 @@ Synthesize a security investigation report."""
             unverified_conclusions=unverified,
             remediations=remediations,
             summary=text if text else "Gemini analysis completed.",
+            llm_verified=True,
+            error_message=None,
         )
 
     def _generate_markdown_summary(

@@ -30,15 +30,23 @@ load_dotenv(override=True)
 def get_active_gemini_api_key() -> str:
     """Retrieves the active Gemini API key from session state, GEMINI_API_KEY, or GOOGLE_API_KEY.
 
-    Never prints or exposes the key value.
+    Never prints or exposes the key value. Sanitizes leading/trailing quotes and spaces.
     """
-    session_key = st.session_state.get("custom_gemini_api_key", "").strip() if "custom_gemini_api_key" in st.session_state else ""
-    if session_key:
-        return session_key
+    for k in ("custom_gemini_api_key", "sidebar_api_key_input"):
+        val = st.session_state.get(k, "")
+        if isinstance(val, str) and val.strip().strip("'\""):
+            return val.strip().strip("'\"")
     return (
-        os.getenv("GEMINI_API_KEY", "").strip()
-        or os.getenv("GOOGLE_API_KEY", "").strip()
+        os.getenv("GEMINI_API_KEY", "").strip().strip("'\"")
+        or os.getenv("GOOGLE_API_KEY", "").strip().strip("'\"")
     )
+
+
+# Session state defaults for Gemini verification status
+if "gemini_verified" not in st.session_state:
+    st.session_state["gemini_verified"] = False
+if "gemini_last_error" not in st.session_state:
+    st.session_state["gemini_last_error"] = None
 
 # Page configuration
 st.set_page_config(
@@ -169,11 +177,37 @@ with m3:
 with m4:
     current_key = get_active_gemini_api_key()
     has_api_key = bool(current_key)
-    st.metric(
-        label="Investigation Engine",
-        value="Google Gemini" if has_api_key else "Deterministic Engine",
-        delta="Live LLM Active" if has_api_key else "Deterministic Fallback",
-    )
+    is_verified = st.session_state.get("gemini_verified", False)
+    last_error = st.session_state.get("gemini_last_error")
+
+    if is_verified:
+        st.metric(
+            label="Investigation Engine",
+            value="Google Gemini",
+            delta="Live LLM Verified",
+            delta_color="normal",
+        )
+    elif has_api_key and last_error:
+        st.metric(
+            label="Investigation Engine",
+            value="Deterministic Engine",
+            delta="LLM Error (Fell Back)",
+            delta_color="inverse",
+        )
+    elif has_api_key:
+        st.metric(
+            label="Investigation Engine",
+            value="Gemini Configured",
+            delta="Pending Verification",
+            delta_color="off",
+        )
+    else:
+        st.metric(
+            label="Investigation Engine",
+            value="Deterministic Engine",
+            delta="Deterministic Fallback",
+            delta_color="off",
+        )
 
 # Main Navigation Tabs
 tab_viz, tab_investigate, tab_blast, tab_remediate = st.tabs([
@@ -279,12 +313,25 @@ with tab_investigate:
             investigator = AgentShieldInvestigator(api_key=get_active_gemini_api_key())
             report = run_async(investigator.investigate(user_query, auto_remediate=auto_fix))
 
-            st.markdown(f"**Investigator Engine:** `{report.provider}`")
+            if report.llm_verified:
+                st.session_state["gemini_verified"] = True
+                st.session_state["gemini_last_error"] = None
+                st.success(f"**Investigator Engine:** `{report.provider}` (Live LLM Reasoning Active)")
+            elif report.error_message:
+                st.session_state["gemini_verified"] = False
+                st.session_state["gemini_last_error"] = report.error_message
+                st.markdown(f"**Investigator Engine:** `{report.provider}`")
+                st.warning(
+                    f"⚠️ **Gemini Live Request Notice:** {report.error_message}  \n"
+                    "Seamlessly fell back to the deterministic FalkorDB graph engine."
+                )
+            else:
+                st.markdown(f"**Investigator Engine:** `{report.provider}`")
 
             # 1. Confirmed Findings
             st.markdown("#### 1. Confirmed Graph Findings (FalkorDB Evidence)")
             for item in report.confirmed_findings:
-                clean_text = item.replace("[CONFIRMED GRAPH FINDING] ", "")
+                clean_text = item.replace("[CONFIRMED GRAPH FINDING] ", "").lstrip("*- ").strip()
                 st.markdown(
                     f'<div class="finding-card"><b>[CONFIRMED]</b> {clean_text}</div>',
                     unsafe_allow_html=True,
@@ -293,7 +340,7 @@ with tab_investigate:
             # 2. Potential Risks
             st.markdown("#### 2. Potential Threat Scenarios")
             for item in report.potential_risks:
-                clean_text = item.replace("[POTENTIAL RISK] ", "")
+                clean_text = item.replace("[POTENTIAL RISK] ", "").lstrip("*- ").strip()
                 st.markdown(
                     f'<div class="risk-card"><b>[RISK]</b> {clean_text}</div>',
                     unsafe_allow_html=True,
@@ -302,7 +349,7 @@ with tab_investigate:
             # 3. Unverified Conclusions
             st.markdown("#### 3. Unverified Hypotheses & Telemetry Boundaries")
             for item in report.unverified_conclusions:
-                clean_text = item.replace("[UNVERIFIED CONCLUSION] ", "")
+                clean_text = item.replace("[UNVERIFIED CONCLUSION] ", "").lstrip("*- ").strip()
                 st.markdown(
                     f'<div class="unverified-card"><b>[BOUNDARY]</b> {clean_text}</div>',
                     unsafe_allow_html=True,
@@ -432,10 +479,23 @@ with tab_remediate:
 with st.sidebar:
     st.header("🤖 AI Engine Configuration")
     active_key = get_active_gemini_api_key()
-    if active_key:
-        st.success("🟢 Gemini API Key Active")
+    is_verified = st.session_state.get("gemini_verified", False)
+    last_error = st.session_state.get("gemini_last_error")
+
+    if is_verified:
+        st.success("🟢 Gemini Live API Active & Verified")
+    elif active_key and last_error:
+        st.error(f"🔴 Fallback Active: {last_error}")
+    elif active_key:
+        st.info("🔵 Gemini Key Configured (Ready to Verify)")
     else:
         st.warning("🟡 No Key Set (Deterministic Fallback)")
+
+    def _sync_api_key():
+        new_val = st.session_state.get("sidebar_api_key_input", "").strip().strip("'\"")
+        st.session_state["custom_gemini_api_key"] = new_val
+        st.session_state["gemini_verified"] = False
+        st.session_state["gemini_last_error"] = None
 
     user_api_key = st.text_input(
         "Gemini API Key:",
@@ -444,17 +504,44 @@ with st.sidebar:
         placeholder="Paste key to activate Gemini...",
         help="Enter your Google Gemini API key to enable live LLM reasoning. Never printed or exposed.",
         key="sidebar_api_key_input",
+        on_change=_sync_api_key,
     )
-    if user_api_key.strip() != st.session_state.get("custom_gemini_api_key", ""):
-        st.session_state["custom_gemini_api_key"] = user_api_key.strip()
+    if user_api_key.strip().strip("'\"") != st.session_state.get("custom_gemini_api_key", ""):
+        st.session_state["custom_gemini_api_key"] = user_api_key.strip().strip("'\"")
+        st.session_state["gemini_verified"] = False
+        st.session_state["gemini_last_error"] = None
         st.rerun()
+
+    if active_key:
+        if st.button("🧪 Verify Gemini Key", use_container_width=True):
+            with st.spinner("Probing Gemini API..."):
+                inv = AgentShieldInvestigator(api_key=active_key)
+                valid, msg = run_async(inv.verify_credentials())
+                if valid:
+                    st.session_state["gemini_verified"] = True
+                    st.session_state["gemini_last_error"] = None
+                    st.success(f"✅ {msg}")
+                    st.rerun()
+                else:
+                    st.session_state["gemini_verified"] = False
+                    st.session_state["gemini_last_error"] = msg
+                    st.error(f"❌ Verification Failed: {msg}")
+                    st.rerun()
 
     st.divider()
     st.header("⚙️ System Diagnostics")
     st.markdown(f"- **FalkorDB Host:** `localhost:6379`")
     st.markdown(f"- **Active Graph:** `agentshield`")
     st.markdown(f"- **Database Engine:** `FalkorDB (Redis Graph Engine)`")
-    st.markdown(f"- **LLM Provider:** `{'Google Gemini' if active_key else 'Deterministic Fallback'}`")
+    if is_verified:
+        llm_label = "Google Gemini (Live Verified)"
+    elif active_key and last_error:
+        llm_label = "Deterministic Fallback (LLM Error)"
+    elif active_key:
+        llm_label = "Google Gemini (Configured, Unverified)"
+    else:
+        llm_label = "Deterministic Fallback"
+    st.markdown(f"- **LLM Provider:** `{llm_label}`")
 
     st.divider()
     st.header("⚡ Live Cypher Console")

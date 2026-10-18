@@ -45,3 +45,25 @@ def test_dashboard_preset_query_structure():
     assert "btn_preset_isolate" in content
     assert 'key="investigator_query"' in content
 
+
+def test_dashboard_gemini_key_resolution_structure():
+    """Verify that app.py defines get_active_gemini_api_key with dual session state keys and fallback."""
+    with open("app.py", "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "def get_active_gemini_api_key" in content
+    assert "custom_gemini_api_key" in content
+    assert "sidebar_api_key_input" in content
+    assert "GEMINI_API_KEY" in content
+    assert "GOOGLE_API_KEY" in content
+
+
+def test_dashboard_verification_ui_elements():
+    """Verify that app.py contains the key verification button and accurate status logic."""
+    with open("app.py", "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "Verify Gemini Key" in content
+    assert "gemini_verified" in content
+    assert "gemini_last_error" in content
+    assert "Live LLM Reasoning Active" in content
+
+
