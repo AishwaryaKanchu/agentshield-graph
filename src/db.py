@@ -14,6 +14,7 @@ DEFAULT_USERNAME = os.getenv("FALKORDB_USERNAME", None)
 DEFAULT_PASSWORD = os.getenv("FALKORDB_PASSWORD", None)
 
 
+
 def get_falkordb_client(
     host: Optional[str] = None,
     port: Optional[int] = None,
@@ -21,11 +22,14 @@ def get_falkordb_client(
     password: Optional[str] = None,
 ) -> FalkorDB:
     """Connect to the FalkorDB instance."""
+    use_tls = os.getenv("FALKORDB_TLS", "false").lower() == "true"
+
     return FalkorDB(
         host=host or DEFAULT_HOST,
         port=port or DEFAULT_PORT,
         username=username or DEFAULT_USERNAME,
         password=password or DEFAULT_PASSWORD,
+        ssl=use_tls,
     )
 
 
