@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import pandas as pd
 from dotenv import load_dotenv
 
-from src.db import check_connection, get_graph
+from src.db import check_connection, get_graph, get_setting
 from src.init_db import init_database
 from src.security_graph import (
     trace_untrusted_confidential_paths,
@@ -530,8 +530,16 @@ with st.sidebar:
 
     st.divider()
     st.header("⚙️ System Diagnostics")
-    st.markdown(f"- **FalkorDB Host:** `localhost:6379`")
-    st.markdown(f"- **Active Graph:** `agentshield`")
+    from src.db import get_setting
+
+st.markdown(
+    f"- **FalkorDB Host:** "
+    f"`{get_setting('FALKORDB_HOST', 'localhost')}:"
+    f"{get_setting('FALKORDB_PORT', '6379')}`"
+)
+st.markdown(
+    f"- **Active Graph:** `{get_setting('FALKORDB_GRAPH', 'agentshield')}`"
+)
     st.markdown(f"- **Database Engine:** `FalkorDB (Redis Graph Engine)`")
     if is_verified:
         llm_label = "Google Gemini (Live Verified)"
