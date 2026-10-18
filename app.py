@@ -530,16 +530,15 @@ with st.sidebar:
 
     st.divider()
     st.header("⚙️ System Diagnostics")
-    from src.db import get_setting
 
-st.markdown(
-    f"- **FalkorDB Host:** "
-    f"`{get_setting('FALKORDB_HOST', 'localhost')}:"
-    f"{get_setting('FALKORDB_PORT', '6379')}`"
-)
-st.markdown(
-    f"- **Active Graph:** `{get_setting('FALKORDB_GRAPH', 'agentshield')}`"
-)
+    st.markdown(
+        f"- **FalkorDB Host:** "
+        f"`{get_setting('FALKORDB_HOST', 'localhost')}:"
+        f"{get_setting('FALKORDB_PORT', '6379')}`"
+    )
+    st.markdown(
+        f"- **Active Graph:** `{get_setting('FALKORDB_GRAPH', 'agentshield')}`"
+    )
     st.markdown(f"- **Database Engine:** `FalkorDB (Redis Graph Engine)`")
     if is_verified:
         llm_label = "Google Gemini (Live Verified)"
