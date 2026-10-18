@@ -1,18 +1,34 @@
+
 """FalkorDB connection and graph management for AgentShield Graph."""
 
 import os
 from typing import Optional
+
+import streamlit as st
 from dotenv import load_dotenv
 from falkordb import FalkorDB
 
 load_dotenv()
 
-DEFAULT_HOST = os.getenv("FALKORDB_HOST", "localhost")
-DEFAULT_PORT = int(os.getenv("FALKORDB_PORT", "6379"))
-DEFAULT_GRAPH = os.getenv("FALKORDB_GRAPH", "agentshield")
-DEFAULT_USERNAME = os.getenv("FALKORDB_USERNAME", None)
-DEFAULT_PASSWORD = os.getenv("FALKORDB_PASSWORD", None)
 
+def get_setting(key: str, default=None):
+    """Read configuration from environment variables or Streamlit Secrets."""
+    value = os.getenv(key)
+
+    if value is not None and value != "":
+        return value
+
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
+DEFAULT_HOST = get_setting("FALKORDB_HOST", "localhost")
+DEFAULT_PORT = int(get_setting("FALKORDB_PORT", "6379"))
+DEFAULT_GRAPH = get_setting("FALKORDB_GRAPH", "agentshield")
+DEFAULT_USERNAME = get_setting("FALKORDB_USERNAME")
+DEFAULT_PASSWORD = get_setting("FALKORDB_PASSWORD")
 
 
 def get_falkordb_client(
@@ -22,7 +38,7 @@ def get_falkordb_client(
     password: Optional[str] = None,
 ) -> FalkorDB:
     """Connect to the FalkorDB instance."""
-    use_tls = os.getenv("FALKORDB_TLS", "false").lower() == "true"
+    use_tls = str(get_setting("FALKORDB_TLS", "false")).lower() == "true"
 
     return FalkorDB(
         host=host or DEFAULT_HOST,
